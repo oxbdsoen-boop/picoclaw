@@ -1,0 +1,31 @@
+version: "3.8"
+
+services:
+  # Adapter: chuyển đổi OpenAI format → dep.apphay.io.vn/chat
+  deepseek-adapter:
+    build:
+      context: .
+      dockerfile: Dockerfile.adapter
+    container_name: deepseek-adapter
+    restart: unless-stopped
+    environment:
+      - DEEPSEEK_BASE_URL=https://dep.apphay.io.vn
+      - DEEPSEEK_TIMEOUT=120
+      - ADAPTER_PORT=9090
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PicoClaw gateway + Telegram bot
+  picoclaw-deepseek:
+    image: picoclaw:local
+    container_name: picoclaw-deepseek
+    volumes:
+      - ./data:/home/picoclaw/.picoclaw
+    command: ["gateway"]
+    restart: unless-stopped
+    depends_on:
+      deepseek-adapter:
+        condition: service_healthy
