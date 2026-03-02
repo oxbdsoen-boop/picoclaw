@@ -1,18 +1,13 @@
 """
-AutoGen Multi-Agent Telegram Bot
-─────────────────────────────────
-Agents:
-  • Manager   — nhận tin nhắn, phân công cho agent phù hợp
-  • Coder     — viết / debug code
-  • Researcher— tìm kiếm, phân tích thông tin
-  • Writer    — viết nội dung, dịch thuật
-
-Flow:  User → Telegram → Manager → GroupChat (agents trao đổi) → reply User
+AutoGen Multi-Agent Telegram Bot (v2 - Simple Router)
+─────────────────────────────────────────────────────
+Dùng keyword routing thay vì GroupChat Manager
+để tránh bị Gamene block system prompt phức tạp.
 """
 
 import asyncio
 import logging
-import textwrap
+import re
 
 import autogen
 from telegram import Update
@@ -28,7 +23,6 @@ from config import (
     TELEGRAM_TOKEN,
     ALLOWED_USERS,
     get_llm_config,
-    MANAGER_MODEL,
     CODER_MODEL,
     RESEARCHER_MODEL,
     WRITER_MODEL,
@@ -41,44 +35,42 @@ logging.basicConfig(
 log = logging.getLogger("autogen-tg")
 
 # ═══════════════════════════════════════════════
-#  AutoGen Agents
+#  Agents
 # ═══════════════════════════════════════════════
 
-coder = autogen.AssistantAgent(
-    name="Coder",
-    system_message=textwrap.dedent("""\
-        Bạn là lập trình viên chuyên nghiệp.
-        - Viết code sạch, có comment
-        - Hỗ trợ Python, JavaScript, Go, Bash, SQL
-        - Giải thích ngắn gọn khi cần
-        - Nếu task không liên quan code, nói "PASS" để nhường agent khác
-    """),
-    llm_config=get_llm_config(CODER_MODEL),
-)
+agents = {
+    "coder": autogen.AssistantAgent(
+        name="Coder",
+        system_message=(
+            "You are a professional programmer. "
+            "Write clean code with comments. "
+            "Support Python, JavaScript, Go, Bash, SQL. "
+            "Reply in the same language the user uses."
+        ),
+        llm_config=get_llm_config(CODER_MODEL),
+    ),
+    "researcher": autogen.AssistantAgent(
+        name="Researcher",
+        system_message=(
+            "You are a research and analysis expert. "
+            "Provide thorough, well-structured answers. "
+            "Compare options and cite sources when possible. "
+            "Reply in the same language the user uses."
+        ),
+        llm_config=get_llm_config(RESEARCHER_MODEL),
+    ),
+    "writer": autogen.AssistantAgent(
+        name="Writer",
+        system_message=(
+            "You are a creative content writer. "
+            "Write blogs, emails, reports, translations. "
+            "Professional and easy to read. "
+            "Reply in the same language the user uses."
+        ),
+        llm_config=get_llm_config(WRITER_MODEL),
+    ),
+}
 
-researcher = autogen.AssistantAgent(
-    name="Researcher",
-    system_message=textwrap.dedent("""\
-        Bạn là chuyên gia nghiên cứu và phân tích.
-        - Tìm hiểu, so sánh, tổng hợp thông tin
-        - Trả lời dựa trên kiến thức, có dẫn nguồn khi có thể
-        - Nếu task không liên quan nghiên cứu, nói "PASS"
-    """),
-    llm_config=get_llm_config(RESEARCHER_MODEL),
-)
-
-writer = autogen.AssistantAgent(
-    name="Writer",
-    system_message=textwrap.dedent("""\
-        Bạn là nhà sáng tạo nội dung.
-        - Viết blog, email, báo cáo, dịch thuật
-        - Văn phong chuyên nghiệp, dễ đọc
-        - Nếu task không liên quan viết lách, nói "PASS"
-    """),
-    llm_config=get_llm_config(WRITER_MODEL),
-)
-
-# User proxy — tự động approve, không chạy code local
 user_proxy = autogen.UserProxyAgent(
     name="User",
     human_input_mode="NEVER",
@@ -86,134 +78,137 @@ user_proxy = autogen.UserProxyAgent(
     code_execution_config=False,
 )
 
-# Group chat — Manager tự chọn agent phù hợp
-groupchat = autogen.GroupChat(
-    agents=[user_proxy, coder, researcher, writer],
-    messages=[],
-    max_round=6,  # tối đa 6 lượt trao đổi
-    speaker_selection_method="auto",
+# ═══════════════════════════════════════════════
+#  Keyword router
+# ═══════════════════════════════════════════════
+
+CODE_KW = re.compile(
+    r'(?i)(code|script|function|bug|debug|fix|error|python|javascript|js|go|golang|'
+    r'bash|sql|html|css|api|server|docker|git|compile|class|import|pip|npm|'
+    r'viet code|sua code|loi|deploy|cai dat|install|build|database|db|'
+    r'algorithm|sort|loop|array|regex|json|http|curl|'
+    r'viet code|sua code|ham|bien|trien khai)'
 )
 
-manager = autogen.GroupChatManager(
-    groupchat=groupchat,
-    llm_config=get_llm_config(MANAGER_MODEL),
+RESEARCH_KW = re.compile(
+    r'(?i)(search|find|compare|research|explain|what is|how does|why|difference|'
+    r'vs|versus|review|analyze|pros|cons|recommend|best|'
+    r'tim|so sanh|giai thich|tai sao|the nao|khac nhau|phan tich|'
+    r'la gi|nghia la|lich su|history|wiki|define)'
 )
+
+WRITER_KW = re.compile(
+    r'(?i)(write|blog|article|email|letter|translate|draft|essay|story|poem|'
+    r'content|copy|marketing|seo|summary|summarize|rewrite|'
+    r'viet bai|dich|tom tat|noi dung|bai viet|thu|soan|bien tap)'
+)
+
+
+def route_message(text):
+    code_score = len(CODE_KW.findall(text))
+    research_score = len(RESEARCH_KW.findall(text))
+    writer_score = len(WRITER_KW.findall(text))
+
+    if code_score >= research_score and code_score >= writer_score and code_score > 0:
+        return "coder", "Coder"
+    elif writer_score >= research_score and writer_score > 0:
+        return "writer", "Writer"
+    elif research_score > 0:
+        return "researcher", "Researcher"
+    else:
+        return "researcher", "Researcher"
 
 
 # ═══════════════════════════════════════════════
-#  Run AutoGen in thread (sync → async bridge)
+#  Run agent
 # ═══════════════════════════════════════════════
 
-def run_autogen_sync(message: str) -> str:
-    """Run AutoGen group chat synchronously, return final reply."""
-    # Reset chat history for new conversation
-    groupchat.messages.clear()
+def run_agent_sync(message):
+    agent_key, agent_label = route_message(message)
+    agent = agents[agent_key]
+    log.info(f"Routed to: {agent_label}")
 
     try:
-        user_proxy.initiate_chat(
-            manager,
-            message=message,
-            clear_history=True,
-        )
+        user_proxy.initiate_chat(agent, message=message, clear_history=True)
     except Exception as e:
-        log.error(f"AutoGen error: {e}")
-        return f"❌ Lỗi: {e}"
+        log.error(f"Agent error ({agent_key}): {e}")
+        if agent_key != "researcher":
+            log.info("Fallback to researcher...")
+            try:
+                user_proxy.initiate_chat(agents["researcher"], message=message, clear_history=True)
+                agent = agents["researcher"]
+                agent_label = "Researcher (fallback)"
+            except Exception as e2:
+                return f"Error: {e2}"
+        else:
+            return f"Error: {e}"
 
-    # Collect last non-User message as the answer
-    for msg in reversed(groupchat.messages):
-        if msg.get("name") != "User" and msg.get("content"):
-            content = msg["content"].strip()
-            if content and content.upper() != "PASS":
-                agent_name = msg.get("name", "Agent")
-                return f"🤖 **{agent_name}**:\n{content}"
-
-    return "⚠️ Không có agent nào trả lời được. Thử lại với câu hỏi khác."
+    last_msg = agent.last_message(user_proxy)
+    if last_msg and last_msg.get("content"):
+        return f"[{agent_label}]\n{last_msg['content']}"
+    return "No response."
 
 
-async def run_autogen_async(message: str) -> str:
-    """Async wrapper around sync AutoGen."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, run_autogen_sync, message)
+async def run_agent_async(message):
+    return await asyncio.get_event_loop().run_in_executor(None, run_agent_sync, message)
 
 
 # ═══════════════════════════════════════════════
-#  Telegram Handlers
+#  Telegram
 # ═══════════════════════════════════════════════
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 **AutoGen Multi-Agent Bot**\n\n"
-        "Gửi tin nhắn bất kỳ, tôi sẽ phân công cho agent phù hợp:\n"
-        "• 💻 **Coder** — viết code, debug\n"
-        "• 🔍 **Researcher** — tìm kiếm, phân tích\n"
-        "• ✍️ **Writer** — viết nội dung, dịch\n\n"
-        "Ví dụ: _Viết Python script download YouTube_",
-        parse_mode="Markdown",
+        "AutoGen Multi-Agent Bot\n\n"
+        "Coder | Researcher | Writer\n"
+        "Send any message!"
     )
-
-
-async def cmd_models(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"📋 **Models đang dùng:**\n"
-        f"• Manager: `{MANAGER_MODEL}`\n"
-        f"• Coder: `{CODER_MODEL}`\n"
-        f"• Researcher: `{RESEARCHER_MODEL}`\n"
-        f"• Writer: `{WRITER_MODEL}`",
-        parse_mode="Markdown",
-    )
-
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
-    # Whitelist check
     if ALLOWED_USERS and user_id not in ALLOWED_USERS:
-        await update.message.reply_text("⛔ Bạn không có quyền sử dụng bot này.")
+        await update.message.reply_text("Access denied.")
         return
 
     text = update.message.text
     if not text:
         return
 
-    log.info(f"[{user_id}] → {text[:80]}")
-
-    # Send typing indicator
+    log.info(f"[{user_id}] {text[:80]}")
     await update.message.chat.send_action("typing")
-    placeholder = await update.message.reply_text("⏳ Đang xử lý, các agent đang thảo luận...")
+
+    agent_key, agent_label = route_message(text)
+    ph = await update.message.reply_text(f"{agent_label} is working...")
 
     try:
-        reply = await run_autogen_async(text)
+        reply = await run_agent_async(text)
     except Exception as e:
-        reply = f"❌ Lỗi hệ thống: {e}"
+        reply = f"Error: {e}"
 
-    # Edit placeholder with result (split if too long)
     if len(reply) <= 4096:
-        await placeholder.edit_text(reply, parse_mode="Markdown")
+        try:
+            await ph.edit_text(reply, parse_mode="Markdown")
+        except Exception:
+            await ph.edit_text(reply)
     else:
-        await placeholder.edit_text(reply[:4096], parse_mode="Markdown")
-        # Send remaining parts
+        try:
+            await ph.edit_text(reply[:4096], parse_mode="Markdown")
+        except Exception:
+            await ph.edit_text(reply[:4096])
         for i in range(4096, len(reply), 4096):
-            await update.message.reply_text(reply[i:i+4096], parse_mode="Markdown")
+            await update.message.reply_text(reply[i:i+4096])
 
-    log.info(f"[{user_id}] ← {reply[:80]}")
+    log.info(f"[{user_id}] done")
 
-
-# ═══════════════════════════════════════════════
-#  Main
-# ═══════════════════════════════════════════════
 
 def main():
-    log.info("Starting AutoGen Telegram Bot...")
-    log.info(f"Allowed users: {ALLOWED_USERS}")
-    log.info(f"Models: Manager={MANAGER_MODEL}, Coder={CODER_MODEL}, "
-             f"Researcher={RESEARCHER_MODEL}, Writer={WRITER_MODEL}")
+    log.info("Starting AutoGen Telegram Bot v2")
+    log.info(f"Users: {ALLOWED_USERS}")
+    log.info(f"Coder={CODER_MODEL}, Researcher={RESEARCHER_MODEL}, Writer={WRITER_MODEL}")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("models", cmd_models))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    log.info("Bot is running. Press Ctrl+C to stop.")
     app.run_polling(drop_pending_updates=True)
 
 
