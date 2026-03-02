@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  picoclaw-gateway:
+    image: docker.io/sipeed/picoclaw:latest
+    container_name: picoclaw-gateway
+    restart: unless-stopped
+    
+    ports:
+      - "8080:8080"
+    
+    volumes:
+      - ./picoclaw-data:/root/.picoclaw
+    
+    environment:
+      # Gateway configuration
+      - PICOCLAW_GATEWAY_HOST=0.0.0.0
+      - PICOCLAW_GATEWAY_PORT=8080
+      - PICOCLAW_WORKSPACE=~/.picoclaw/workspace
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    networks:
+      - picoclaw-network
+    
+    stdin_open: true
+    tty: true
+
+  # Optional: Agent for one-shot queries
+  picoclaw-agent:
+    image: docker.io/sipeed/picoclaw:latest
+    container_name: picoclaw-agent
+    profiles:
+      - agent
+    
+    volumes:
+      - ./picoclaw-data:/root/.picoclaw
+    
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["picoclaw agent"]
+    
+    networks:
+      - picoclaw-network
+    
+    stdin_open: true
+    tty: true
+
+networks:
+  picoclaw-network:
+    driver: bridge
+
+volumes:
+  picoclaw-data:
