@@ -1,0 +1,8 @@
+version: "3.8"
+
+services:
+  autogen-bot:
+    build: .
+    container_name: autogen-telegram-bot
+    restart: unless-stopped
+    env_file: .env
