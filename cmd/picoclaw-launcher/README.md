@@ -105,6 +105,40 @@ Saves the configuration. The request body must be a complete Config JSON object.
 
 ---
 
+#### POST /api/config/test-model
+
+Tests model/provider connectivity before saving configuration.
+
+**Request Body** — `application/json`
+
+```json
+{
+  "model": {
+    "model_name": "gpt-5.2",
+    "model": "openai/gpt-5.2",
+    "api_key": "sk-xxx",
+    "api_base": "https://api.openai.com/v1"
+  }
+}
+```
+
+**Response** `200 OK`
+
+```json
+{
+  "status": "ok",
+  "message": "Connectivity test passed",
+  "model": "gpt-5.2",
+  "preview": "OK"
+}
+```
+
+**Error** `400 Bad Request` — Invalid request/provider config
+
+**Error** `502 Bad Gateway` — Upstream provider connectivity failed
+
+---
+
 ### Auth API
 
 #### GET /api/auth/status

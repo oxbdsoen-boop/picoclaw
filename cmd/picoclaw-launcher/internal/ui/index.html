@@ -669,8 +669,10 @@
     <div class="modal">
         <div class="modal-title" id="modalTitle"></div>
         <div id="modalBody"></div>
+        <div class="form-hint" id="modalTestStatus" style="margin-top: 8px; min-height: 16px;"></div>
         <div class="modal-actions">
             <button class="btn btn-sm" onclick="closeModelModal()" data-i18n="cancel">Cancel</button>
+            <button class="btn btn-sm" id="modalTestBtn" onclick="testModelFromModal()" data-i18n="models.testApi">Test API</button>
             <button class="btn btn-sm btn-primary" id="modalSaveBtn" onclick="saveModelFromModal()" data-i18n="save">Save</button>
         </div>
     </div>
@@ -740,6 +742,10 @@ const i18nData = {
         'models.editModel': 'Edit Model',
         'models.addModel': 'Add Model',
         'models.advancedOptions': 'Advanced Options',
+        'models.testApi': 'Test API',
+        'models.testing': 'Testing...',
+        'models.testPassed': 'API test passed',
+        'models.testFailed': 'API test failed',
         'models.deleteConfirm': 'Delete model "{name}"?',
         'models.requiredFields': 'Model Name and Model ID are required',
         // Model fields
@@ -856,6 +862,10 @@ const i18nData = {
         'models.editModel': '\u7F16\u8F91\u6A21\u578B',
         'models.addModel': '\u6DFB\u52A0\u6A21\u578B',
         'models.advancedOptions': '\u9AD8\u7EA7\u9009\u9879',
+        'models.testApi': '\u6D4B\u8BD5 API',
+        'models.testing': '\u6D4B\u8BD5\u4E2D...',
+        'models.testPassed': 'API \u6D4B\u8BD5\u6210\u529F',
+        'models.testFailed': 'API \u6D4B\u8BD5\u5931\u8D25',
         'models.deleteConfirm': '\u786E\u5B9A\u5220\u9664\u6A21\u578B\u201C{name}\u201D\uFF1F',
         'models.requiredFields': '\u6A21\u578B\u540D\u79F0\u548C\u6A21\u578B ID \u4E3A\u5FC5\u586B\u9879',
         'field.modelName': '\u6A21\u578B\u540D\u79F0',
@@ -1309,6 +1319,7 @@ function showEditModelModal(idx) {
     const m = configData.model_list[idx];
     document.getElementById('modalTitle').textContent = t('models.editModel') + ': ' + m.model_name;
     renderModalBody(m);
+    setModalTestStatus('');
     document.getElementById('modelModal').classList.add('active');
 }
 
@@ -1316,11 +1327,82 @@ function showAddModelModal() {
     editingModelIndex = -1;
     document.getElementById('modalTitle').textContent = t('models.addModel');
     renderModalBody({});
+    setModalTestStatus('');
     document.getElementById('modelModal').classList.add('active');
 }
 
 function closeModelModal() {
     document.getElementById('modelModal').classList.remove('active');
+}
+
+function setModalTestStatus(message, type) {
+    const el = document.getElementById('modalTestStatus');
+    if (!el) return;
+    el.textContent = message || '';
+    if (type === 'success') {
+        el.style.color = 'var(--success)';
+    } else if (type === 'error') {
+        el.style.color = 'var(--error)';
+    } else {
+        el.style.color = 'var(--text-muted)';
+    }
+}
+
+function collectModelFromModal() {
+    const inputs = document.querySelectorAll('#modalBody input[data-field]');
+    const obj = {};
+    inputs.forEach(input => {
+        const key = input.dataset.field;
+        let val = input.value.trim();
+        if (input.type === 'number' && val) val = parseInt(val, 10) || 0;
+        if (val !== '' && val !== 0) obj[key] = val;
+        else if (key === 'model_name' || key === 'model') obj[key] = val;
+    });
+    return obj;
+}
+
+async function testModelFromModal() {
+    const obj = collectModelFromModal();
+    if (!obj.model) {
+        setModalTestStatus(t('models.requiredFields'), 'error');
+        return;
+    }
+
+    const btn = document.getElementById('modalTestBtn');
+    const originalText = btn ? btn.textContent : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = t('models.testing');
+    }
+    setModalTestStatus(t('models.testing'));
+
+    try {
+        const res = await fetch('/api/config/test-model', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: obj }),
+        });
+
+        if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(errText || t('models.testFailed'));
+        }
+
+        const data = await res.json();
+        const msg = data && data.preview
+            ? `${t('models.testPassed')}: ${data.preview}`
+            : t('models.testPassed');
+        setModalTestStatus(msg, 'success');
+        showStatus(t('models.testPassed'), 'success');
+    } catch (e) {
+        setModalTestStatus(`${t('models.testFailed')}: ${e.message}`, 'error');
+        showStatus(`${t('models.testFailed')}: ${e.message}`, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = originalText;
+        }
+    }
 }
 
 function renderModalBody(data) {
@@ -1356,18 +1438,10 @@ function renderModalBody(data) {
 }
 
 function saveModelFromModal() {
-    const inputs = document.querySelectorAll('#modalBody input[data-field]');
-    const obj = {};
-    inputs.forEach(input => {
-        const key = input.dataset.field;
-        let val = input.value.trim();
-        if (input.type === 'number' && val) val = parseInt(val, 10) || 0;
-        if (val !== '' && val !== 0) obj[key] = val;
-        else if (key === 'model_name' || key === 'model') obj[key] = val;
-    });
+    const obj = collectModelFromModal();
 
     if (!obj.model_name || !obj.model) {
-        showStatus(t('models.requiredFields'), 'error');
+        setModalTestStatus(t('models.requiredFields'), 'error');
         return;
     }
 

@@ -124,6 +124,50 @@ func TestPutConfig_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestTestModel_InvalidJSON(t *testing.T) {
+	cfg := &config.Config{}
+	mux, _ := setupConfigMux(t, cfg)
+
+	req := httptest.NewRequest("POST", "/api/config/test-model", strings.NewReader("{bad"))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for invalid JSON, got %d", w.Code)
+	}
+}
+
+func TestTestModel_MissingModel(t *testing.T) {
+	cfg := &config.Config{}
+	mux, _ := setupConfigMux(t, cfg)
+
+	body := `{"model":{"model_name":"gpt4"}}`
+	req := httptest.NewRequest("POST", "/api/config/test-model", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing model id, got %d", w.Code)
+	}
+}
+
+func TestTestModel_UnknownProtocol(t *testing.T) {
+	cfg := &config.Config{}
+	mux, _ := setupConfigMux(t, cfg)
+
+	body := `{"model":{"model_name":"x","model":"unknown/something","api_key":"k"}}`
+	req := httptest.NewRequest("POST", "/api/config/test-model", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for unknown protocol, got %d", w.Code)
+	}
+}
+
 // ── Auth API tests ───────────────────────────────────────────────
 
 func TestAuthStatus(t *testing.T) {

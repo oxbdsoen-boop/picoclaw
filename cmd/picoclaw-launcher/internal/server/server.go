@@ -1,15 +1,18 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/auth"
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 const DefaultPort = "18800"
@@ -23,6 +26,17 @@ type providerStatus struct {
 	Email      string `json:"email,omitempty"`
 	ProjectID  string `json:"project_id,omitempty"`
 	ExpiresAt  string `json:"expires_at,omitempty"`
+}
+
+type modelTestRequest struct {
+	Model config.ModelConfig `json:"model"`
+}
+
+type modelTestResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+	Model   string `json:"model,omitempty"`
+	Preview string `json:"preview,omitempty"`
 }
 
 // ── Route registration ───────────────────────────────────────────
@@ -69,6 +83,73 @@ func RegisterConfigAPI(mux *http.ServeMux, absPath string) {
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	// POST /api/config/test-model — test model connectivity before saving config
+	mux.HandleFunc("POST /api/config/test-model", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		var req modelTestRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+			return
+		}
+
+		req.Model.ModelName = strings.TrimSpace(req.Model.ModelName)
+		req.Model.Model = strings.TrimSpace(req.Model.Model)
+		req.Model.APIKey = strings.TrimSpace(req.Model.APIKey)
+		req.Model.APIBase = strings.TrimSpace(req.Model.APIBase)
+		req.Model.Proxy = strings.TrimSpace(req.Model.Proxy)
+		req.Model.AuthMethod = strings.TrimSpace(req.Model.AuthMethod)
+		req.Model.ConnectMode = strings.TrimSpace(req.Model.ConnectMode)
+		req.Model.Workspace = strings.TrimSpace(req.Model.Workspace)
+
+		if req.Model.Model == "" {
+			http.Error(w, "model is required", http.StatusBadRequest)
+			return
+		}
+
+		provider, modelID, err := providers.CreateProviderFromConfig(&req.Model)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to create provider: %v", err), http.StatusBadRequest)
+			return
+		}
+		if closer, ok := provider.(providers.StatefulProvider); ok {
+			defer closer.Close()
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+
+		resp, err := provider.Chat(ctx, []providers.Message{{Role: "user", Content: "Reply with exactly: OK"}}, nil, modelID, map[string]any{
+			"max_tokens":  32,
+			"temperature": 0,
+		})
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Connectivity test failed: %v", err), http.StatusBadGateway)
+			return
+		}
+
+		preview := ""
+		if resp != nil {
+			preview = strings.TrimSpace(resp.Content)
+		}
+		if len(preview) > 120 {
+			preview = preview[:120] + "..."
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(modelTestResponse{
+			Status:  "ok",
+			Message: "Connectivity test passed",
+			Model:   modelID,
+			Preview: preview,
+		})
 	})
 }
 
